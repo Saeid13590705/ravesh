@@ -1,0 +1,558 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import plotly.express as px
+from io import BytesIO
+import os
+
+# ----------------- تنظیمات صفحه -----------------
+st.set_page_config(
+    page_title="داشبورد تحلیل کارنامه تحصیلی",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+st.title("📊 داشبورد تحلیل کارنامه ترم اول")
+st.markdown("---")
+
+# ----------------- بخش آپلود فایل -----------------
+st.sidebar.header("📁 آپلود فایل جدید")
+
+uploaded_file = st.sidebar.file_uploader(
+    "فایل اکسل کارنامه را انتخاب کنید",
+    type=['xlsx', 'xls'],
+    help="فایل باید ساختار استاندارد کارنامه را داشته باشد"
+)
+
+# اگر فایل آپلود نشده، از فایل پیش‌فرض استفاده کن
+if uploaded_file is not None:
+    # استفاده از فایل آپلود شده
+    FILE_NAME = uploaded_file
+    file_source = "آپلود شده"
+else:
+    # استفاده از فایل پیش‌فرض
+    FILE_NAME = "14040919_1300.xlsx"
+    file_source = "پیش‌فرض"
+    if not os.path.exists(FILE_NAME):
+        st.warning("⚠️ فایل پیش‌فرض یافت نشد. لطفاً فایل اکسل را آپلود کنید.")
+        st.stop()
+
+st.sidebar.info(f"منبع فایل: **{file_source}**")
+
+# ----------------- بارگذاری فایل -----------------
+@st.cache_data
+def load_excel_file(file_obj):
+    """بارگذاری فایل اکسل (چه از آپلود چه از فایل محلی)"""
+    try:
+        if isinstance(file_obj, str):  # فایل محلی
+            xls = pd.ExcelFile(file_obj)
+        else:  # فایل آپلود شده
+            xls = pd.ExcelFile(BytesIO(file_obj.read()))
+        return xls
+    except Exception as e:
+        st.error(f"❌ خطا در خواندن فایل اکسل: {str(e)}")
+        return None
+
+# بارگذاری فایل
+xls = load_excel_file(FILE_NAME)
+if xls is None:
+    st.stop()
+
+# ----------------- Sidebar -----------------
+with st.sidebar:
+    st.markdown("---")
+    st.header("⚙️ تنظیمات تحلیل")
+    
+    # انتخاب شیت
+    selected_base = st.selectbox(
+        "انتخاب پایه / شیت",
+        xls.sheet_names,
+        index=0
+    )
+    
+    st.markdown("---")
+    st.header("ℹ️ اطلاعات فایل")
+    st.write(f"تعداد شیت‌ها: **{len(xls.sheet_names)}**")
+    st.write(f"شیت‌های موجود: {', '.join(xls.sheet_names)}")
+
+# ----------------- بارگذاری شیت انتخابی -----------------
+@st.cache_data
+def load_sheet_data(_xls, sheet_name, file_obj):
+    """بارگذاری داده‌های یک شیت"""
+    try:
+        if isinstance(file_obj, str):  # فایل محلی
+            df = pd.read_excel(file_obj, sheet_name=sheet_name)
+        else:  # فایل آپلود شده
+            # Reset file pointer
+            file_obj.seek(0)
+            df = pd.read_excel(BytesIO(file_obj.read()), sheet_name=sheet_name)
+        return df
+    except Exception as e:
+        st.error(f"❌ خطا در خواندن شیت {sheet_name}: {str(e)}")
+        return None
+
+# بارگذاری داده‌ها
+df = load_sheet_data(xls, selected_base, FILE_NAME)
+if df is None:
+    st.stop()
+
+# نمایش اطلاعات فایل
+with st.expander("🔍 مشاهده اطلاعات فایل آپلود شده", expanded=False):
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("تعداد ردیف‌ها", df.shape[0])
+    with col2:
+        st.metric("تعداد ستون‌ها", df.shape[1])
+    with col3:
+        st.metric("حجم داده", f"{df.memory_usage().sum() / 1024:.1f} KB")
+    
+    st.write("نمونه‌ای از داده‌ها:")
+    st.dataframe(df.head(), use_container_width=True)
+
+# ----------------- شناسایی خودکار ستون‌های دروس -----------------
+def identify_subject_columns(df):
+    """شناسایی خودکار ستون‌های دروس"""
+    # لیست احتمالی نام دروس (با ترتیب اهمیت)
+    subject_patterns = [
+        'قرآن', 'دینی', 'املا', 'انشا', 'ادبیات', 'عربی', 'زبان',
+        'علوم', 'ریاضی', 'اجتماعی', 'تفکر', 'هنر', 'هوش', 
+        'کار و فناوری', 'فیزیک', 'شیمی', 'زیست', 'تاریخ', 'جغرافیا'
+    ]
+    
+    subject_columns = []
+    for col in df.columns:
+        col_str = str(col).strip()
+        for pattern in subject_patterns:
+            if pattern in col_str:
+                subject_columns.append(col)
+                break
+    
+    # اگر ستون درسی پیدا نشد، سعی کن ستون‌های عددی را پیدا کن
+    if not subject_columns:
+        st.warning("⚠️ ستون درسی به صورت خودکار شناسایی نشد. در حال جستجوی ستون‌های عددی...")
+        for col in df.columns:
+            try:
+                # بررسی آیا ستون حاوی اعداد است
+                numeric_check = pd.to_numeric(df[col].head(10), errors='coerce')
+                if numeric_check.notna().sum() > 5:  # اگر حداقل 5 مقدار عددی داشته باشد
+                    subject_columns.append(col)
+            except:
+                continue
+    
+    return subject_columns
+
+# شناسایی دروس
+subject_columns = identify_subject_columns(df)
+
+if not subject_columns:
+    st.error("❌ هیچ ستون درسی شناسایی نشد! لطفاً مطمئن شوید فایل ساختار صحیحی دارد.")
+    st.stop()
+
+st.success(f"✅ {len(subject_columns)} ستون درسی شناسایی شد")
+
+# ----------------- محاسبه میانگین نمرات -----------------
+# تبدیل نمرات به عددی
+df_clean = df.copy()
+for col in subject_columns:
+    df_clean[col] = pd.to_numeric(df_clean[col], errors='coerce')
+
+# محاسبه میانگین نمرات برای هر دانش‌آموز
+df_clean['میانگین نمرات'] = df_clean[subject_columns].mean(axis=1).round(2)
+
+# حذف سطرهای بدون نمره
+df_clean = df_clean.dropna(subset=['میانگین نمرات'])
+
+# ----------------- شناسایی ستون کلاس -----------------
+def identify_class_column(df):
+    """شناسایی خودکار ستون کلاس"""
+    class_patterns = ['کلاس', 'class', 'پایه', 'رشته', 'گروه']
+    
+    for col in df.columns:
+        col_str = str(col).strip().lower()
+        for pattern in class_patterns:
+            if pattern in col_str:
+                return col
+    
+    # اگر پیدا نشد، از ستون اول غیرعددی استفاده کن
+    for col in df.columns:
+        if col not in subject_columns and col != 'میانگین نمرات':
+            try:
+                # بررسی آیا ستون عددی نیست
+                pd.to_numeric(df[col].head(10), errors='raise')
+            except:
+                return col
+    
+    return df.columns[0]  # ستون اول به عنوان کلاس
+
+class_column = identify_class_column(df_clean)
+df_clean[class_column] = df_clean[class_column].astype(str).str.strip()
+
+# ----------------- شناسایی ستون‌های نام -----------------
+def identify_name_columns(df):
+    """شناسایی ستون‌های نام و نام خانوادگی"""
+    name_cols = {'نام': None, 'نام خانوادگی': None}
+    
+    for col in df.columns:
+        col_str = str(col).strip().lower()
+        if 'نام' in col_str and 'خانوادگی' in col_str:
+            name_cols['نام خانوادگی'] = col
+        elif 'نام' in col_str and name_cols['نام'] is None:
+            name_cols['نام'] = col
+    
+    return name_cols
+
+name_cols = identify_name_columns(df_clean)
+
+# ----------------- انتخاب کلاس -----------------
+classes = sorted(df_clean[class_column].dropna().unique())
+
+with st.sidebar:
+    st.markdown("---")
+    selected_class = st.selectbox(
+        "انتخاب کلاس",
+        ["همه کلاس‌ها"] + list(classes),
+        index=0
+    )
+
+if selected_class != "همه کلاس‌ها":
+    df_filtered = df_clean[df_clean[class_column] == selected_class].copy()
+else:
+    df_filtered = df_clean.copy()
+
+# ----------------- شاخص‌های کلیدی -----------------
+st.subheader("📊 شاخص‌های عملکردی")
+
+col1, col2, col3, col4, col5 = st.columns(5)
+
+with col1:
+    st.metric("تعداد دانش‌آموز", df_filtered.shape[0])
+
+with col2:
+    avg_score = df_filtered['میانگین نمرات'].mean()
+    st.metric("میانگین کل", f"{avg_score:.2f}")
+
+with col3:
+    max_score = df_filtered['میانگین نمرات'].max()
+    st.metric("بیشترین نمره", f"{max_score:.2f}")
+
+with col4:
+    min_score = df_filtered['میانگین نمرات'].min()
+    st.metric("کمترین نمره", f"{min_score:.2f}")
+
+with col5:
+    std_score = df_filtered['میانگین نمرات'].std()
+    st.metric("انحراف معیار", f"{std_score:.2f}")
+
+st.markdown("---")
+
+# ----------------- تحلیل تک‌تک دروس -----------------
+st.subheader("📚 تحلیل عملکرد درسی")
+
+# محاسبه آمار هر درس
+subject_stats = []
+for subject in subject_columns:
+    stats = {
+        'درس': subject,
+        'میانگین': df_filtered[subject].mean(),
+        'بیشترین': df_filtered[subject].max(),
+        'کمترین': df_filtered[subject].min(),
+        'انحراف معیار': df_filtered[subject].std(),
+        'تعداد نمره': df_filtered[subject].count()
+    }
+    subject_stats.append(stats)
+
+subject_df = pd.DataFrame(subject_stats).round(2)
+subject_df_sorted = subject_df.sort_values('میانگین', ascending=False)
+
+# نمایش تحلیل دروس
+col1, col2 = st.columns([2, 1])
+
+with col1:
+    # نمودار میانگین دروس
+    fig_subjects = px.bar(
+        subject_df_sorted,
+        x='درس',
+        y='میانگین',
+        title='میانگین نمره هر درس',
+        color='میانگین',
+        color_continuous_scale='RdYlGn',
+        text='میانگین'
+    )
+    fig_subjects.update_layout(
+        xaxis_tickangle=-45,
+        height=400
+    )
+    st.plotly_chart(fig_subjects, use_container_width=True)
+
+with col2:
+    st.write("📊 آمار دروس:")
+    st.dataframe(
+        subject_df_sorted[['درس', 'میانگین', 'بیشترین', 'کمترین']],
+        use_container_width=True,
+        height=400
+    )
+
+# ----------------- تب‌های اصلی -----------------
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📈 توزیع نمرات", 
+    "🏫 مقایسه کلاس‌ها", 
+    "🥇 رتبه‌بندی", 
+    "📋 داده خام",
+    "⚙️ تنظیمات پیشرفته"
+])
+
+# ---------- تب ۱: توزیع نمرات ----------
+with tab1:
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # هیستوگرام
+        fig_hist = px.histogram(
+            df_filtered,
+            x='میانگین نمرات',
+            nbins=15,
+            title='توزیع میانگین نمرات',
+            color_discrete_sequence=['#2E86AB'],
+            opacity=0.8
+        )
+        fig_hist.update_layout(
+            xaxis_title='میانگین نمرات',
+            yaxis_title='تعداد دانش‌آموزان'
+        )
+        st.plotly_chart(fig_hist, use_container_width=True)
+    
+    with col2:
+        # نمودار جعبه‌ای
+        fig_box = px.box(
+            df_filtered,
+            y='میانگین نمرات',
+            title='پراکندگی نمرات',
+            points='all',
+            color_discrete_sequence=['#A23B72']
+        )
+        fig_box.update_layout(height=400)
+        st.plotly_chart(fig_box, use_container_width=True)
+        
+        # نمایش آمار توصیفی
+        st.write("📊 آمار توصیفی:")
+        desc_stats = df_filtered['میانگین نمرات'].describe().round(2)
+        st.write(desc_stats)
+
+# ---------- تب ۲: مقایسه کلاس‌ها ----------
+with tab2:
+    if selected_class == "همه کلاس‌ها":
+        # محاسبه آمار برای هر کلاس
+        class_stats = df_clean.groupby(class_column)['میانگین نمرات'].agg([
+            ('تعداد', 'count'),
+            ('میانگین', 'mean'),
+            ('انحراف معیار', 'std'),
+            ('کمترین', 'min'),
+            ('میانه', 'median'),
+            ('بیشترین', 'max')
+        ]).round(2).reset_index()
+        
+        class_stats = class_stats.sort_values('میانگین', ascending=False)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # نمودار مقایسه کلاس‌ها
+            fig_class = px.bar(
+                class_stats,
+                x=class_column,
+                y='میانگین',
+                title='میانگین نمره هر کلاس',
+                color='میانگین',
+                text='میانگین',
+                color_continuous_scale='plasma'
+            )
+            st.plotly_chart(fig_class, use_container_width=True)
+        
+        with col2:
+            # جدول آمار کلاس‌ها
+            st.write("📋 آمار کلاس‌ها:")
+            st.dataframe(
+                class_stats,
+                use_container_width=True,
+                hide_index=True
+            )
+    else:
+        st.info(f"📌 در حال مشاهده کلاس **{selected_class}** هستید. برای مقایسه کلاس‌ها، گزینه 'همه کلاس‌ها' را انتخاب کنید.")
+
+# ---------- تب ۳: رتبه‌بندی ----------
+with tab3:
+    # آماده‌سازی داده برای رتبه‌بندی
+    ranking_df = df_filtered.copy()
+    
+    # ایجاد نام کامل
+    if name_cols['نام'] and name_cols['نام خانوادگی']:
+        ranking_df['نام کامل'] = ranking_df[name_cols['نام']].astype(str) + ' ' + ranking_df[name_cols['نام خانوادگی']].astype(str)
+    elif name_cols['نام']:
+        ranking_df['نام کامل'] = ranking_df[name_cols['نام']].astype(str)
+    else:
+        ranking_df['نام کامل'] = 'دانش‌آموز ' + (ranking_df.index + 1).astype(str)
+    
+    # مرتب‌سازی و رتبه‌بندی
+    ranking_df = ranking_df.sort_values('میانگین نمرات', ascending=False)
+    ranking_df['رتبه'] = range(1, len(ranking_df) + 1)
+    
+    # نمایش جدول رتبه‌بندی
+    display_cols = ['رتبه', 'نام کامل', 'میانگین نمرات', class_column] + subject_columns[:4]
+    st.dataframe(
+        ranking_df[display_cols],
+        use_container_width=True,
+        height=400
+    )
+    
+    # نمایش ۵ نفر برتر
+    st.subheader("🏆 برترین‌های کلاس")
+    top_5 = ranking_df.head(5)
+    
+    fig_top = px.bar(
+        top_5,
+        x='نام کامل',
+        y='میانگین نمرات',
+        title='پنج دانش‌آموز برتر',
+        text='میانگین نمرات',
+        color='میانگین نمرات',
+        color_continuous_scale='RdYlGn'
+    )
+    fig_top.update_layout(xaxis_tickangle=-45)
+    st.plotly_chart(fig_top, use_container_width=True)
+
+# ---------- تب ۴: داده خام ----------
+with tab4:
+    st.write(f"📄 داده‌های خام کلاس: **{selected_class}**")
+    
+    # انتخاب ستون‌های نمایش
+    all_columns = list(df_filtered.columns)
+    
+    # فیلتر ستون‌ها
+    columns_to_show = st.multiselect(
+        "ستون‌ها را برای نمایش انتخاب کنید:",
+        options=all_columns,
+        default=[class_column, 'میانگین نمرات'] + 
+                ([name_cols['نام'], name_cols['نام خانوادگی']] if name_cols['نام'] else []) +
+                subject_columns[:5]
+    )
+    
+    if columns_to_show:
+        st.dataframe(
+            df_filtered[columns_to_show],
+            use_container_width=True,
+            height=500
+        )
+    else:
+        st.warning("لطفاً حداقل یک ستون برای نمایش انتخاب کنید.")
+
+# ---------- تب ۵: تنظیمات پیشرفته ----------
+with tab5:
+    st.subheader("⚙️ تنظیمات پیشرفته تحلیل")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # آستانه نمره
+        min_score_threshold = st.slider(
+            "حداقل نمره برای محاسبه میانگین:",
+            min_value=0,
+            max_value=20,
+            value=0,
+            help="نمرات کمتر از این مقدار در محاسبه میانگین در نظر گرفته نمی‌شوند"
+        )
+        
+        # وزن‌دهی دروس
+        st.write("### وزن‌دهی دروس (اختیاری)")
+        use_weighting = st.checkbox("فعال کردن وزن‌دهی دروس")
+        
+        if use_weighting:
+            st.info("⚠️ این قابلیت در نسخه فعلی غیرفعال است")
+    
+    with col2:
+        # دروس انتخابی
+        st.write("### انتخاب دروس برای تحلیل")
+        selected_subjects = st.multiselect(
+            "دروس مورد نظر برای تحلیل:",
+            options=subject_columns,
+            default=subject_columns[:min(8, len(subject_columns))]
+        )
+        
+        if selected_subjects:
+            st.success(f"{len(selected_subjects)} درس انتخاب شده است")
+        
+        # ریست کش
+        if st.button("🔄 ریست حافظه کش"):
+            st.cache_data.clear()
+            st.success("حافظه کش پاک شد!")
+            st.rerun()
+
+# ----------------- بخش دانلود خروجی -----------------
+st.markdown("---")
+st.subheader("📥 خروجی‌ها")
+
+output_col1, output_col2, output_col3 = st.columns(3)
+
+with output_col1:
+    # دانلود داده‌های فیلتر شده
+    filtered_csv = df_filtered.to_csv(index=False, encoding='utf-8-sig')
+    st.download_button(
+        "💾 دانلود داده‌های فیلتر شده (CSV)",
+        data=filtered_csv,
+        file_name=f"کارنامه_{selected_base}_{selected_class}.csv",
+        mime="text/csv",
+        help="دانلود تمام داده‌های کلاس انتخاب شده"
+    )
+
+with output_col2:
+    # دانلود آمار دروس
+    subjects_csv = subject_df.to_csv(index=False, encoding='utf-8-sig')
+    st.download_button(
+        "📊 دانلود آمار دروس (CSV)",
+        data=subjects_csv,
+        file_name=f"آمار_دروس_{selected_base}_{selected_class}.csv",
+        mime="text/csv",
+        help="دانلود آمار توصیفی تمام دروس"
+    )
+
+with output_col3:
+    # دانلود رتبه‌بندی
+    if 'ranking_df' in locals():
+        ranking_csv = ranking_df.to_csv(index=False, encoding='utf-8-sig')
+        st.download_button(
+            "🥇 دانلود رتبه‌بندی (CSV)",
+            data=ranking_csv,
+            file_name=f"رتبه‌بندی_{selected_base}_{selected_class}.csv",
+            mime="text/csv",
+            help="دانلود رتبه‌بندی کامل دانش‌آموزان"
+        )
+
+# ----------------- راهنمای استفاده -----------------
+with st.sidebar:
+    st.markdown("---")
+    with st.expander("📖 راهنمای استفاده"):
+        st.markdown("""
+        ### نحوه استفاده:
+        
+        1. **آپلود فایل**: فایل اکسل کارنامه را آپلود کنید
+        2. **انتخاب شیت**: پایه/شیت مورد نظر را انتخاب کنید
+        3. **انتخاب کلاس**: کلاس خاص یا همه کلاس‌ها را انتخاب کنید
+        4. **تحلیل داده**: از تب‌های مختلف برای تحلیل استفاده کنید
+        5. **دانلود**: نتایج را در قالب CSV دانلود کنید
+        
+        ### ساختار فایل مورد انتظار:
+        - ستون «کلاس» برای شناسایی کلاس‌ها
+        - ستون‌های «نام» و «نام خانوادگی»
+        - ستون‌های دروس با نام‌های استاندارد
+        - داده‌های عددی در ستون‌های دروس
+        
+        ### نکات:
+        - فایل باید فرمت xlsx یا xls باشد
+        - سیستم به صورت خودکار ستون‌ها را شناسایی می‌کند
+        - برای بهترین تجربه از مرورگرهای مدرن استفاده کنید
+        """)
+
+# ----------------- پیام موفقیت -----------------
+st.success("""
+✅ تحلیل با موفقیت انجام شد! 
+میتوانید از تب‌های مختلف برای بررسی جزئیات استفاده کنید یا نتایج را دانلود نمایید.
+""")
