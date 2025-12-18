@@ -24,39 +24,36 @@ uploaded_file = st.sidebar.file_uploader(
     help="فایل باید ساختار استاندارد کارنامه را داشته باشد"
 )
 
-# اگر فایل آپلود نشده، از فایل پیش‌فرض استفاده کن
+# ----------------- مدیریت فایل -----------------
 if uploaded_file is not None:
     # استفاده از فایل آپلود شده
-    FILE_NAME = uploaded_file
     file_source = "آپلود شده"
+    
+    # خواندن فایل بدون کش کردن (چون فایل آپلود شده قابل کش نیست)
+    try:
+        xls = pd.ExcelFile(BytesIO(uploaded_file.read()))
+        # Reset file pointer برای استفاده مجدد
+        uploaded_file.seek(0)
+    except Exception as e:
+        st.error(f"❌ خطا در خواندن فایل اکسل: {str(e)}")
+        st.stop()
+        
 else:
     # استفاده از فایل پیش‌فرض
     FILE_NAME = "14040919_1300.xlsx"
     file_source = "پیش‌فرض"
+    
     if not os.path.exists(FILE_NAME):
         st.warning("⚠️ فایل پیش‌فرض یافت نشد. لطفاً فایل اکسل را آپلود کنید.")
         st.stop()
-
-st.sidebar.info(f"منبع فایل: **{file_source}**")
-
-# ----------------- بارگذاری فایل -----------------
-@st.cache_data
-def load_excel_file(file_obj):
-    """بارگذاری فایل اکسل (چه از آپلود چه از فایل محلی)"""
+    
     try:
-        if isinstance(file_obj, str):  # فایل محلی
-            xls = pd.ExcelFile(file_obj)
-        else:  # فایل آپلود شده
-            xls = pd.ExcelFile(BytesIO(file_obj.read()))
-        return xls
+        xls = pd.ExcelFile(FILE_NAME)
     except Exception as e:
         st.error(f"❌ خطا در خواندن فایل اکسل: {str(e)}")
-        return None
+        st.stop()
 
-# بارگذاری فایل
-xls = load_excel_file(FILE_NAME)
-if xls is None:
-    st.stop()
+st.sidebar.info(f"منبع فایل: **{file_source}**")
 
 # ----------------- Sidebar -----------------
 with st.sidebar:
@@ -76,23 +73,27 @@ with st.sidebar:
     st.write(f"شیت‌های موجود: {', '.join(xls.sheet_names)}")
 
 # ----------------- بارگذاری شیت انتخابی -----------------
-@st.cache_data
-def load_sheet_data(_xls, sheet_name, file_obj):
+def load_sheet_data(sheet_name, uploaded_file_obj=None, file_path=None):
     """بارگذاری داده‌های یک شیت"""
     try:
-        if isinstance(file_obj, str):  # فایل محلی
-            df = pd.read_excel(file_obj, sheet_name=sheet_name)
-        else:  # فایل آپلود شده
-            # Reset file pointer
-            file_obj.seek(0)
-            df = pd.read_excel(BytesIO(file_obj.read()), sheet_name=sheet_name)
+        if uploaded_file_obj is not None:
+            # برای فایل آپلود شده
+            uploaded_file_obj.seek(0)
+            df = pd.read_excel(BytesIO(uploaded_file_obj.read()), sheet_name=sheet_name)
+        else:
+            # برای فایل محلی
+            df = pd.read_excel(file_path, sheet_name=sheet_name)
         return df
     except Exception as e:
         st.error(f"❌ خطا در خواندن شیت {sheet_name}: {str(e)}")
         return None
 
 # بارگذاری داده‌ها
-df = load_sheet_data(xls, selected_base, FILE_NAME)
+if uploaded_file is not None:
+    df = load_sheet_data(selected_base, uploaded_file_obj=uploaded_file)
+else:
+    df = load_sheet_data(selected_base, file_path=FILE_NAME)
+
 if df is None:
     st.stop()
 
