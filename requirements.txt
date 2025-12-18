@@ -1,17 +1,4 @@
-# ✅ نسخه‌های سازگار با Python 3.13 در Streamlit Cloud
-
-# کتابخانه اصلی
-streamlit==1.28.1
-
-# پردازش داده - نسخه‌های سازگار
-pandas==2.1.4
-numpy==1.26.4
-
-# رسم نمودار
-plotly==5.18.0
-
-# خواندن اکسل
-openpyxl==3.1.2
-
-# پکیج‌های کمکی
-xlrd==2.0.1
+streamlit
+pandas
+plotly
+openpyxl
